@@ -68,7 +68,7 @@ def rsi(s,n=14):
     a=up.ewm(alpha=1/n,adjust=False).mean(); b=dn.ewm(alpha=1/n,adjust=False).mean()
     return 100-100/(1+a/b.replace(0,np.nan))
 
-def features(d,n):
+def features(d, market):
     x=d.copy()
     for k in [10,21,50,100,200]:
         x[f'E{k}']=x.Close.ewm(span=k,adjust=False).mean(); x[f'S{k}']=x[f'E{k}'].pct_change(10)*100
@@ -82,9 +82,18 @@ def features(d,n):
     x['V20']=x.Close.pct_change().rolling(20).std()*np.sqrt(252)*100; x['V60']=x.Close.pct_change().rolling(60).std()*np.sqrt(252)*100; x['VR']=x.Volume/x.Volume.rolling(20).mean()
     x['D21']=(x.Close-x.E21)/x.E21*100; x['D50']=(x.Close-x.E50)/x.E50*100; x['D200']=(x.Close-x.E200)/x.E200*100
     x['HH20']=x.High.rolling(20).max(); x['LL20']=x.Low.rolling(20).min(); x['BO']=(x.Close>x.HH20.shift()).astype(int); x['BD']=(x.Close<x.LL20.shift()).astype(int)
-    nn=n[['Close']].rename(columns={'Close':'NC'}); x=x.join(nn,how='left')
-    x['RS1']= (x.Close.pct_change(21)-x.NC.pct_change(21))*100; x['RS3']=(x.Close.pct_change(63)-x.NC.pct_change(63))*100; x['RS6']=(x.Close.pct_change(126)-x.NC.pct_change(126))*100
-    n50=n.Close.ewm(span=50,adjust=False).mean(); n200=n.Close.ewm(span=200,adjust=False).mean(); x['NRET']=n.Close.pct_change(21)*100; x['NV']=n.Close.pct_change().rolling(20).std()*np.sqrt(252)*100; x['NT']=(x.NC>n50).astype(int); x['NLT']=(x.NC>n200).astype(int)
+    market_close = market[['Close']].rename(columns={'Close':'NC'}).reindex(x.index).ffill()
+    x=x.join(market_close,how='left')
+    x['RS1']=(x['Close'].pct_change(21)-x['NC'].pct_change(21))*100
+    x['RS3']=(x['Close'].pct_change(63)-x['NC'].pct_change(63))*100
+    x['RS6']=(x['Close'].pct_change(126)-x['NC'].pct_change(126))*100
+    market_close_series=x['NC']
+    n50=market_close_series.ewm(span=50,adjust=False).mean()
+    n200=market_close_series.ewm(span=200,adjust=False).mean()
+    x['NRET']=market_close_series.pct_change(21)*100
+    x['NV']=market_close_series.pct_change().rolling(20).std()*np.sqrt(252)*100
+    x['NT']=(market_close_series>n50).astype(int)
+    x['NLT']=(market_close_series>n200).astype(int)
     return x.replace([np.inf,-np.inf],np.nan)
 
 FEATS=['R5','R10','R21','R63','R126','RSI','ADX','MACD','V20','V60','VR','ATRp','D21','D50','D200','S10','S21','S50','S100','S200','BO','BD','RS1','RS3','RS6','NRET','NV','NT','NLT']
