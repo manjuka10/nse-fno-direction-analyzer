@@ -1,6 +1,6 @@
-streamlit>=1.40
-pandas>=2.2
-numpy>=1.26
-yfinance>=0.2.50
-scikit-learn>=1.5
-requests>=2.32
+streamlit
+pandas
+numpy
+yfinance
+scikit-learn
+requests
