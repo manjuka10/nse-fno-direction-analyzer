@@ -10,27 +10,78 @@ from sklearn.impute import SimpleImputer
 
 st.set_page_config(page_title='NSE F&O Direction Analyzer', page_icon='📈', layout='wide')
 IST=ZoneInfo('Asia/Kolkata')
-FALLBACK=['ADANIENT','ADANIPORTS','APOLLOHOSP','ASIANPAINT','AXISBANK','BAJAJ-AUTO','BAJAJFINSV','BAJFINANCE','BEL','BHARTIARTL','BPCL','BRITANNIA','CIPLA','COALINDIA','DRREDDY','EICHERMOT','ETERNAL','GRASIM','HCLTECH','HDFCBANK','HDFCLIFE','HEROMOTOCO','HINDALCO','HINDPETRO','HINDUNILVR','ICICIBANK','INDIANB','INDIGO','INDUSINDBK','INFY','IOC','ITC','JINDALSTEL','JIOFIN','JSWSTEEL','KOTAKBANK','LAURUSLABS','LICHSGFIN','LT','LTIM','M&M','MARUTI','MAXHEALTH','MCX','NATIONALUM','NESTLEIND','NMDC','NTPC','ONGC','PERSISTENT','PFC','PIDILITIND','PNB','POWERGRID','RECLTD','RELIANCE','SAIL','SBILIFE','SBIN','SHRIRAMFIN','SOLARINDS','SUNPHARMA','TATACONSUM','TATAMOTORS','TATASTEEL','TCS','TECHM','TITAN','TORNTPHARM','TRENT','TVSMOTOR','ULTRACEMCO','UNIONBANK','VEDL','VBL','WIPRO','YESBANK','ZYDUSLIFE','SIEMENS']
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def fno_universe():
+    """Fetch the NSE F&O individual-security universe dynamically.
+
+    No hardcoded stock list is used. The NSE API is the primary source and the
+    official NSE underlyings page is used only as a dynamic fallback.
+    """
+    index_symbols = {'NIFTY','BANKNIFTY','FINNIFTY','MIDCPNIFTY','NIFTYNXT50'}
+    allowed = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-&.')
+
+    def clean(values):
+        out=[]
+        for value in values:
+            if not isinstance(value,str):
+                continue
+            symbol=value.strip().upper()
+            if not (2 <= len(symbol) <= 25):
+                continue
+            if symbol in index_symbols:
+                continue
+            if all(ch in allowed for ch in symbol):
+                out.append(symbol)
+        return sorted(set(out))
+
+    # Primary: NSE's live underlying-information API.
     try:
         import requests
-        s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept':'application/json','Referer':'https://www.nseindia.com/'})
+        s=requests.Session()
+        s.headers.update({
+            'User-Agent':'Mozilla/5.0',
+            'Accept':'application/json,text/plain,*/*',
+            'Referer':'https://www.nseindia.com/'
+        })
         s.get('https://www.nseindia.com',timeout=10)
-        r=s.get('https://www.nseindia.com/api/underlying-information',timeout=15)
-        vals=[]
-        def walk(x):
-            if isinstance(x,list):
-                for v in x: walk(v)
-            elif isinstance(x,dict):
-                if isinstance(x.get('symbol'),str): vals.append(x['symbol'].upper())
-                for v in x.values(): walk(v)
-        if r.ok: walk(r.json())
-        vals=sorted(set(x for x in vals if x.isalpha() and 2<=len(x)<=20))
-        if len(vals)>=100: return vals
-    except Exception: pass
-    return sorted(set(FALLBACK))
+        r=s.get('https://www.nseindia.com/api/underlying-information',timeout=20)
+        if r.ok:
+            vals=[]
+            def walk(x):
+                if isinstance(x,list):
+                    for v in x: walk(v)
+                elif isinstance(x,dict):
+                    if isinstance(x.get('symbol'),str):
+                        vals.append(x['symbol'])
+                    for v in x.values(): walk(v)
+            walk(r.json())
+            vals=clean(vals)
+            if vals:
+                return vals
+    except Exception:
+        pass
+
+    # Dynamic fallback: parse the official NSE page, never a manual list.
+    try:
+        import requests
+        from io import StringIO
+        s=requests.Session()
+        s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://www.nseindia.com/'})
+        r=s.get('https://www.nseindia.com/static/products-services/equity-derivatives-list-underlyings-information',timeout=20)
+        if r.ok:
+            tables=pd.read_html(StringIO(r.text))
+            for table in tables:
+                cols={str(c).strip().upper():c for c in table.columns}
+                symbol_col=next((c for k,c in cols.items() if 'SYMBOL' in k),None)
+                if symbol_col is not None:
+                    vals=clean(table[symbol_col].tolist())
+                    if vals:
+                        return vals
+    except Exception:
+        pass
+
+    return []
+
 
 @st.cache_data(ttl=900, show_spinner=False)
 def history(symbol):
@@ -135,6 +186,7 @@ with c1: refresh=st.button('🔄 Refresh Data',type='primary',use_container_widt
 if refresh:
     fno_universe.clear(); history.clear(); live.clear(); nifty.clear()
 with c2: symbol=st.selectbox('Search NSE F&O stock',fno_universe(),index=None,placeholder='Type symbol, e.g. RELIANCE')
+st.caption(f"NSE F&O individual-stock universe: {len(fno_universe())} securities")
 with c3:
     if 'updated' in st.session_state: st.info('Last Updated\n\n'+st.session_state.updated.strftime('%d-%m-%Y %I:%M:%S %p IST'))
 
@@ -157,9 +209,12 @@ with st.spinner(f'Analysing {symbol}...'):
 
 r=x.iloc[-1]; live_d=(price-r.E21)/r.E21*100 if price else r.D21
 st.subheader(symbol)
-a,b,c,d4=st.columns(4)
-a.metric('Live Price',f'₹{price:,.2f}' if price else f'₹{r.Close:,.2f}',f'{chg:+.2f}' if chg is not None else None)
-b.metric('Direction',direction); c.metric('Avg Upside',f'{avg*100:.1f}%'); d4.metric('21 EMA Distance',f'{live_d:+.2f}%')
+a,b,c,d4,e4=st.columns(5)
+a.metric('Live Price',f'₹{price:,.2f}' if price else f'₹{r.Close:,.2f}')
+b.metric('Change ₹',f'{chg:+,.2f}' if chg is not None else '—')
+c.metric('Change %',f'{pct:+.2f}%' if pct is not None else '—')
+d4.metric('Direction',direction)
+e4.metric('21 EMA Distance',f'{live_d:+.2f}%')
 
 st.subheader('Directional Probability')
 t=pd.DataFrame([{'Horizon':f'{h} trading days','Upside Probability':f'{probs[h]*100:.1f}%','Downside Probability':f'{(1-probs[h])*100:.1f}%','Direction':'Bullish' if probs[h]>=.60 else 'Bearish' if probs[h]<=.40 else 'Neutral','Historical Samples':samples[h]} for h in [5,10,20] if h in probs])
