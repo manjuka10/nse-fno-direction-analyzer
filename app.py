@@ -547,6 +547,23 @@ with st.spinner(f'Analysing {symbol}...'):
     horizon_conf = {h: confidence_label(results[h]) for h in results}
     conf_rank = {'Low': 1, 'Moderate': 2, 'High': 3}
     overall_conf = min(horizon_conf.values(), key=lambda z: conf_rank[z]) if horizon_conf else 'Low'
+
+    # Final Signal is a presentation layer only. It does not change the model
+    # probabilities or technical calculations. It makes disagreement explicit
+    # instead of repeating the same "Direction" label twice.
+    if direction == 'Bullish':
+        if tech_bias == 'Bullish' and overall >= 0.70 and bullish_count == len(results) and overall_conf == 'High':
+            final_signal = 'Strong Bullish'
+        else:
+            final_signal = 'Bullish / Mixed'
+    elif direction == 'Bearish':
+        if tech_bias == 'Bearish' and overall <= 0.30 and bearish_count == len(results) and overall_conf == 'High':
+            final_signal = 'Strong Bearish'
+        else:
+            final_signal = 'Bearish / Mixed'
+    else:
+        final_signal = 'Neutral / Mixed'
+
     st.session_state.updated = datetime.now(IST)
 
 r = x.iloc[-1]
@@ -557,7 +574,7 @@ a, b, c, d4, e4 = st.columns(5)
 a.metric('Live Price', f'₹{price:,.2f}' if price is not None else f'₹{r.Close:,.2f}')
 b.metric('Change ₹', f'{chg:+,.2f}' if chg is not None else '—')
 c.metric('Change %', f'{pct:+.2f}%' if pct is not None else '—')
-d4.metric('Direction', direction)
+d4.metric('Final Signal', final_signal)
 e4.metric('21 EMA Distance', f'{live_d:+.2f}%')
 
 st.subheader('Overall Direction Probability')
