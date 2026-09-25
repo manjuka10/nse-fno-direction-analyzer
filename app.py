@@ -347,10 +347,92 @@ def train_and_predict(x, h, current_row):
     return {
         'prob': calibrated_current,
         'samples': int(n),
+        'test_samples': int(len(test_y)),
         'accuracy': accuracy,
         'brier': brier,
-        'base_rate': float(y.mean()),
+        'base_rate': float(y.iloc[:val_end].mean()),
     }
+
+
+def confidence_label(res):
+    """Translate holdout quality into a conservative reliability label.
+
+    This is a model-reliability label, not a probability of the trade outcome.
+    Brier skill is measured against a constant base-rate forecast on the same
+    holdout sample, so the label is relative to a simple benchmark.
+    """
+    base = float(res.get('base_rate', 0.5))
+    brier = float(res.get('brier', 0.25))
+    acc = float(res.get('accuracy', 0.5))
+    samples = int(res.get('test_samples', 0))
+    baseline_brier = max(base * (1.0 - base), 1e-9)
+    skill = 1.0 - brier / baseline_brier
+    majority = max(base, 1.0 - base)
+    lift = acc - majority
+
+    if samples >= 150 and skill >= 0.10 and lift >= 0.03:
+        return 'High'
+    if samples >= 100 and skill >= 0.03 and lift >= 0.01:
+        return 'Moderate'
+    return 'Low'
+
+
+def technical_bias(x, price=None):
+    """Compact technical-bias summary, kept separate from the ML direction."""
+    r = x.iloc[-1].copy()
+    if price is not None and np.isfinite(price):
+        r.Close = float(price)
+        r.D21 = (float(price) - float(r.E21)) / float(r.E21) * 100
+
+    score = 0
+    if r.Close > r.E21 > r.E50 > r.E200:
+        score += 2
+    elif r.Close < r.E21 < r.E50 < r.E200:
+        score -= 2
+    else:
+        score += 0
+
+    if r.S21 > 0 and r.S50 > 0:
+        score += 1
+    elif r.S21 < 0 and r.S50 < 0:
+        score -= 1
+
+    if r.RS1 > 0 and r.RS3 > 0:
+        score += 1
+    elif r.RS1 < 0 and r.RS3 < 0:
+        score -= 1
+
+    if r.R21 > 0 and r.R63 > 0:
+        score += 1
+    elif r.R21 < 0 and r.R63 < 0:
+        score -= 1
+
+    if 2 <= r.D21 <= 7:
+        score += 1
+    elif r.D21 < -5 or r.D21 > 10:
+        score -= 1
+
+    if r.ADX >= 20:
+        score += 1 if r.R21 > 0 else -1 if r.R21 < 0 else 0
+
+    if r.VR >= 1:
+        score += 1 if r.R1 > 0 else -1 if r.R1 < 0 else 0
+
+    if r.BO:
+        score += 1
+    if r.BD:
+        score -= 1
+
+    if r.NT:
+        score += 1
+    else:
+        score -= 1
+
+    if score >= 3:
+        return 'Bullish', score
+    if score <= -3:
+        return 'Bearish', score
+    return 'Neutral', score
 
 
 def context(x, price=None):
@@ -461,6 +543,10 @@ with st.spinner(f'Analysing {symbol}...'):
         direction = 'Neutral'
 
     pos, neg = context(x, price)
+    tech_bias, tech_score = technical_bias(x, price)
+    horizon_conf = {h: confidence_label(results[h]) for h in results}
+    conf_rank = {'Low': 1, 'Moderate': 2, 'High': 3}
+    overall_conf = min(horizon_conf.values(), key=lambda z: conf_rank[z]) if horizon_conf else 'Low'
     st.session_state.updated = datetime.now(IST)
 
 r = x.iloc[-1]
@@ -480,6 +566,15 @@ ocol1.metric('Overall Upside Probability', f'{overall * 100:.1f}%')
 ocol2.metric('Overall Downside Probability', f'{(1 - overall) * 100:.1f}%')
 ocol3.metric('Horizon Agreement', f'{max(bullish_count, bearish_count)}/{len(results)}')
 
+st.subheader('Final Assessment')
+fa1, fa2, fa3, fa4 = st.columns(4)
+fa1.metric('Model Direction', direction)
+fa2.metric('Technical Bias', tech_bias)
+fa3.metric('Model Confidence', overall_conf)
+fa4.metric('Horizon Agreement', f'{max(bullish_count, bearish_count)}/{len(results)}')
+
+st.caption('Model Direction is based on calibrated 5D/10D/20D probabilities. Technical Bias is a separate rule-based summary of the current technical state. Model Confidence describes historical holdout reliability; it is not a guarantee of future returns.')
+
 st.subheader('Directional Probability by Horizon')
 rows = []
 for h in HORIZONS:
@@ -494,6 +589,7 @@ for h in HORIZONS:
         'Historical Samples': res['samples'],
         'Validation Accuracy': f"{res['accuracy'] * 100:.1f}%",
         'Brier Score': f"{res['brier']:.3f}",
+        'Model Confidence': confidence_label(res),
     })
 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -525,4 +621,4 @@ emas = pd.DataFrame({'EMA': ['21', '50', '100', '200'], 'Value': [r.E21, r.E50, 
 emas['Value'] = emas.Value.map(lambda z: f'₹{z:,.2f}')
 st.dataframe(emas, use_container_width=True, hide_index=True)
 
-st.caption('Training labels exclude observations without a known future outcome. Probabilities are calibrated from a chronological validation period and evaluated on a later holdout period. The current live price updates close-dependent features for the present prediction. This improves consistency but cannot eliminate model uncertainty or news/event risk.')
+st.caption('Final version: NSE F&O universe is fetched dynamically with no manual stock list. Training labels exclude observations without a known future outcome. Each horizon is trained and evaluated chronologically, then calibrated from an earlier validation period. The current live price updates close-dependent features for the present prediction, while incomplete intraday High/Low/Volume data are not used to fabricate full-day indicators. Probabilities are estimates, not guarantees, and can be affected by news, gaps and regime changes.')
